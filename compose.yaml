@@ -1,0 +1,47 @@
+# Convenience wrapper. Only the PHP side is containerised; solis-identity is
+# expected to be running on the host.
+#
+#   docker compose run --rm test          # run the suite — needs nothing else
+#   docker compose up demo                # browse http://localhost:8080
+#
+# For the demo, start solis-identity bound to ALL interfaces:
+#
+#   bundle exec rackup -o 0.0.0.0 -p 4567
+#
+# The plain `rackup -p 4567` listens on 127.0.0.1 only, which no container can
+# reach — the demo page will report that it cannot fetch the JWKS.
+services:
+  test:
+    build:
+      context: .
+      target: test
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.2}
+
+  demo:
+    build:
+      context: .
+      target: demo
+    ports:
+      - "8080:8080"
+    environment:
+      # What the browser uses. The solis_session cookie is host-only on
+      # localhost, so it is shared across ports — the demo on :8080 sees the
+      # cookie solis-identity set on :4567.
+      SOLIS_IDENTITY_BASE: ${SOLIS_IDENTITY_BASE:-http://localhost:4567}
+      # What this container uses for JWKS and discovery.
+      #
+      # Deliberately NOT host.docker.internal: Sinatra 4 enables host
+      # authorization in development and answers "403 Host not permitted" to
+      # any Host header it doesn't recognise. Its allow-list includes the
+      # .localhost suffix, so identity.localhost — mapped to the host by
+      # extra_hosts below — passes where host.docker.internal is rejected.
+      SOLIS_IDENTITY_INTERNAL: ${SOLIS_IDENTITY_INTERNAL:-http://identity.localhost:4567}
+      # Must match :mountpoint in solis-identity's config/config.yml.
+      # Empty means identity is served from the root of its host.
+      SOLIS_MOUNTPOINT: ${SOLIS_MOUNTPOINT-}
+      SOLIS_TENANT: ${SOLIS_TENANT:-acme}
+      SOLIS_APP: ${SOLIS_APP:-intranet}
+    extra_hosts:
+      # Points a Sinatra-permitted hostname at the host running solis-identity.
+      - "identity.localhost:host-gateway"

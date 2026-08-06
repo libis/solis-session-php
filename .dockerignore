@@ -1,0 +1,12 @@
+# The test image installs its own dependencies — copying the host's vendor/
+# would defeat the point of testing a clean install and bloat the build
+# context. (The demo stage copies only src/, which needs no vendor/ at all.)
+vendor/
+composer.lock
+.git/
+.gitignore
+.phpunit.cache/
+.phpunit.result.cache
+compose.yaml
+Dockerfile
+README.md
