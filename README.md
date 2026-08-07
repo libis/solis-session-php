@@ -93,6 +93,47 @@ A non-200 throws `Solis\Session\Exception` with the status and body (401 bad
 key, 403 wrong scope, 400 bad value/component). There is deliberately no `get()`
 — the KV is a projection, not a query API; reads come back as token claims.
 
+### Reading and writing user attributes
+
+Attributes are the counterpart to KV, and the difference is what reaches a
+token. A KV value is projected into the JWT at issuance, so you write it here
+and read it back off `Claims`. An attribute **never enters a token at all** — so
+`AttributesClient` reads as well as writes, and a value can change without
+anyone reissuing a session.
+
+Use attributes for what an app wants to *know* about a person (preferences,
+profile extras, an external record id); use KV for what the platform needs to
+*decide* with (entitlements that gate access).
+
+```php
+use Solis\Session\AttributesClient;
+
+$attrs = new AttributesClient('https://identity.example.com', getenv('SOLIS_ATTRS_API_KEY'));
+
+$attrs->all('jane@example.com');                 // ['orcid' => '0000-…']
+$attrs->get('jane@example.com', 'orcid');        // '0000-…'  (null if absent)
+$attrs->set('jane@example.com', 'seats', 5);
+$attrs->merge('jane@example.com', ['a' => 1, 'b' => null]);   // null deletes 'b'
+$attrs->replace('jane@example.com', ['only' => 'this']);      // replaces the hash
+$attrs->delete('jane@example.com', 'seats');
+$attrs->clear('jane@example.com');
+```
+
+In a request the email comes off the validated session, so the common call is:
+
+```php
+$attrs->forClaims($session->claims());   // [] when there is no session
+```
+
+Scopes are `attributes:read`, `attributes:write`, or `attributes:*`; a write
+scope implies read. The key's own account bounds its reach — unless it belongs
+to a super_admin, it only sees users in its owner's workspace.
+
+`get()` returns `null` for a key that is not set (the server answers 404, which
+keeps "not set" distinct from "set to null" — use `all()` and
+`array_key_exists()` when you need to tell them apart). Any other non-200 throws
+`Solis\Session\Exception`, with the HTTP status as the exception code.
+
 ### Grav
 
 The Grav plugin is a thin wrapper: on each request build a `Session`, map
