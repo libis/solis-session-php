@@ -134,6 +134,72 @@ keeps "not set" distinct from "set to null" — use `all()` and
 `array_key_exists()` when you need to tell them apart). Any other non-200 throws
 `Solis\Session\Exception`, with the HTTP status as the exception code.
 
+### Managing user accounts
+
+`UsersClient` covers the account lifecycle itself — create, update, suspend,
+rename, remove — where `AttributesClient` reads and writes data *inside* an
+account that already exists. The two are easy to confuse: this client cannot
+touch attributes, and `AttributesClient` cannot create or delete a user.
+
+Authorisation differs too. KV and attributes go by the key's **scopes**; here
+what counts is the **role of the key's owning account**: `super_admin` or
+`tenant_admin`. A `tenant_admin` key only reaches users holding a membership in
+its own tenant and can never grant `super_admin`; `delete()` additionally
+requires `super_admin`.
+
+```php
+use Solis\Session\UsersClient;
+
+$users = new UsersClient('https://identity.example.com', getenv('SOLIS_USERS_API_KEY'));
+
+$users->create('jane@example.com', 'Jane Doe');   // invited + welcome mail
+$users->find('jane@example.com');                 // array, or null if no such account
+$users->update('jane@example.com', ['name' => 'Jane R. Doe']);
+$users->disable('jane@example.com');              // keeps everything; enable is a flip
+$users->enable('jane@example.com');
+$users->invite('jane@example.com');               // re-send the set-password mail
+$users->changeEmail('jane@example.com', 'jane.doe@example.com');
+$users->delete('jane@example.com');               // true (to trash, restorable)
+```
+
+`create()` without a `password` provisions the account as `invited` and identity
+mails a set-password link, so the application never handles a password. Passing
+one creates an already-active account. The name doubles as a login handle for
+applications configured that way, so it must be unique platform-wide.
+
+`update()` is a **partial** update: a call naming only `name` changes only the
+name. It takes `name`, `roles`, `app_roles`, `api_keys_enabled` and `password`;
+roles and app_roles apply to one membership (the key's own tenant, or `tenant`
+for a super_admin), leaving other memberships alone. The address and the status
+are not updatable there — `changeEmail()` also notifies the old address, and
+`enable()`/`disable()` guard against locking yourself out, so sending those
+fields throws rather than being silently ignored.
+
+#### Password recovery
+
+There is no `resetPassword()`, deliberately. The reset flow's token lifetime,
+single-use guarantee, per-address and per-IP rate limits, and the neutral "if
+that address exists we sent a mail" response all live on the identity server —
+an application that drove it over an API would be reimplementing the parts that
+make it safe. Point a "Forgot your password?" link at the tenant-scoped page
+instead:
+
+```php
+$users->resetUrl('secretariat');
+// => "https://identity.example.com/secretariat/auth/reset"
+```
+
+The tenant slug applies that tenant's branding to the page and the mail. There
+is no `return_to` on this flow — the user comes back through the normal login
+route afterwards. For the administrator-side case (a welcome link that expired
+or never arrived), `invite()` re-sends it.
+
+`find()` returns `null` for an unknown account (the server answers 404). Any
+other non-200 throws `Solis\Session\Exception` with the HTTP status as the
+exception code — `409` for a name or address already taken, `422` for invalid
+input, `403` when the key's account lacks the role or the user is outside its
+tenant.
+
 ### Grav
 
 The Grav plugin is a thin wrapper: on each request build a `Session`, map
@@ -177,7 +243,7 @@ together — commit them as a set.
 Runs clean on PHP 8.2:
 
 ```
-OK (20 tests, 41 assertions)
+OK (64 tests, 128 assertions)
 ```
 
 No PHP on hand? The suite runs in a container with nothing else installed:
