@@ -14,7 +14,7 @@ namespace Solis\Session;
  * Typical use in a front controller / Grav plugin:
  *
  *   $session = Solis\Session\Session::fromIdentityBase('https://identity.example.com', [
- *       'service_name' => 'intranet',
+ *       'service_name' => 'intranet',            // also requires aud to contain 'intranet'
  *       'cache_dir'    => sys_get_temp_dir(),
  *   ]);
  *   $claims = $session->authenticate();          // Claims or null
@@ -90,7 +90,10 @@ final class Session
             return $this->claims = null;
         }
         try {
-            $payload = Jwt::verify($token, $this->jwks, $this->leeway);
+            // With service_name set, the token must name this service in `aud`,
+            // exactly as the Ruby middleware requires — otherwise a token issued
+            // for any other application would be accepted here.
+            $payload = Jwt::verify($token, $this->jwks, $this->leeway, null, $this->serviceName);
             return $this->claims = new Claims($payload);
         } catch (Exception) {
             return $this->claims = null;

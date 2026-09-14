@@ -16,11 +16,20 @@ final class Jwt
     public const ALG = 'RS256';
 
     /**
-     * @param  int  $leewaySeconds tolerance for clock skew on exp/nbf/iat
+     * @param  int         $leewaySeconds tolerance for clock skew on exp/nbf/iat
+     * @param  string|null $audience      when given, `aud` must contain it — mirrors the
+     *                                    Ruby TokenValidator's check against :service_name.
+     *                                    Null skips the check, for tokens that are not
+     *                                    addressed to one service.
      * @return array<string,mixed> the verified claim set
      */
-    public static function verify(string $token, Jwks $jwks, int $leewaySeconds = 60, ?int $now = null): array
-    {
+    public static function verify(
+        string $token,
+        Jwks $jwks,
+        int $leewaySeconds = 60,
+        ?int $now = null,
+        ?string $audience = null
+    ): array {
         $now ??= time();
         $parts = explode('.', $token);
         if (count($parts) !== 3) {
@@ -44,7 +53,27 @@ final class Jwt
 
         $claims = self::decodeSegment($p64, 'payload');
         self::assertTime($claims, $now, $leewaySeconds);
+        if ($audience !== null) {
+            self::assertAudience($claims, $audience);
+        }
         return $claims;
+    }
+
+    /**
+     * A token issued for another application must not open this one. solis-identity
+     * always issues `aud` as an array, but RFC 7519 also allows a single string, so
+     * both are accepted. An absent `aud` fails: a token naming no audience cannot be
+     * shown to be meant for this service.
+     *
+     * @param array<string,mixed> $claims
+     */
+    private static function assertAudience(array $claims, string $audience): void
+    {
+        $aud  = $claims['aud'] ?? null;
+        $list = is_string($aud) ? [$aud] : (is_array($aud) ? array_map('strval', $aud) : []);
+        if (!in_array($audience, $list, true)) {
+            throw new Exception("JWT audience does not include '$audience'");
+        }
     }
 
     /**

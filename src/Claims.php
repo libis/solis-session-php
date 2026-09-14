@@ -88,6 +88,17 @@ final class Claims
         return ($this->claims['fee_paid'] ?? false) === true;
     }
 
+    /**
+     * Every workspace the subject belongs to — `tenant()` is only the one the
+     * session is looking through.
+     *
+     * @return string[]
+     */
+    public function tenants(): array
+    {
+        return array_values(array_map('strval', (array) ($this->claims['tenants'] ?? [])));
+    }
+
     public function get(string $key, mixed $default = null): mixed
     {
         return $this->claims[$key] ?? $default;
