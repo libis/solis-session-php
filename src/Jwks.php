@@ -13,6 +13,14 @@ namespace Solis\Session;
  * The cache is a single JSON file with a fetched-at stamp; on an unknown kid
  * (key rotation) the cache is force-refreshed once before giving up, so a
  * rotated signing key is picked up without a restart.
+ *
+ * That forced refresh is rate-limited to once per $refetchInterval seconds
+ * (default 60), failed attempts included, so a stream of tokens with made-up
+ * kids costs identity one JWKS request per interval rather than one per
+ * request — the same rule as the Ruby solis-session (JwksCache#refresh!).
+ * Under PHP-FPM every request builds a new Jwks, so the stamp lives in the
+ * cache file (`refreshed_at`) and only a configured cache file limits across
+ * requests; without one the limit holds per instance (long-running workers).
  */
 final class Jwks
 {
@@ -26,27 +34,43 @@ final class Jwks
     /** @var array<string,string> kid => PEM, built lazily */
     private array $pemCache = [];
 
+    private int $refetchInterval;
+
+    /** When this instance last forced a refresh (unix seconds). */
+    private ?int $lastForcedAt = null;
+
     /**
      * @param string        $url       JWKS endpoint (…/.well-known/jwks.json)
      * @param int           $ttl       cache lifetime in seconds
      * @param string|null   $cacheFile path for the on-disk cache (null = memory only)
      * @param callable|null $fetcher   HTTP getter (string url): string body — override in tests
+     * @param int           $refetchInterval  minimum seconds between refreshes forced by an unknown kid
      */
-    public function __construct(string $url, int $ttl = 3600, ?string $cacheFile = null, ?callable $fetcher = null)
-    {
+    public function __construct(
+        string $url,
+        int $ttl = 3600,
+        ?string $cacheFile = null,
+        ?callable $fetcher = null,
+        int $refetchInterval = 60
+    ) {
         $this->url = $url;
         $this->ttl = $ttl;
         $this->cacheFile = $cacheFile;
         $this->fetcher = $fetcher;
+        $this->refetchInterval = $refetchInterval;
     }
 
     /**
      * Returns an OpenSSLAsymmetricKey for the given kid, refreshing the JWKS
-     * once if the kid is unknown (rotation). Throws when it still can't be found.
+     * once if the kid is unknown (rotation) — unless a forced refresh already
+     * happened within $refetchInterval. Throws when it still can't be found.
      */
     public function publicKeyFor(?string $kid): \OpenSSLAsymmetricKey
     {
-        $pem = $this->pemFor($kid, false) ?? $this->pemFor($kid, true);
+        $pem = $this->pemFor($kid, false);
+        if ($pem === null && $this->mayForceRefresh()) {
+            $pem = $this->pemFor($kid, true);
+        }
         if ($pem === null) {
             throw new Exception('No JWKS key matches kid=' . ($kid ?? '(none)'));
         }
@@ -72,6 +96,53 @@ final class Jwks
             return $this->pemCache[$cacheKey] ??= self::jwkToPem($jwk);
         }
         return null;
+    }
+
+    /**
+     * Whether a forced refresh may happen now; if so, records it first, so a
+     * refresh that then fails still counts against the interval.
+     */
+    private function mayForceRefresh(): bool
+    {
+        $now  = time();
+        $last = max($this->lastForcedAt ?? 0, $this->readRefreshedAt());
+        if ($last > 0 && ($now - $last) < $this->refetchInterval) {
+            return false;
+        }
+        $this->lastForcedAt = $now;
+        $this->stampRefreshedAt($now);
+        return true;
+    }
+
+    private function readRefreshedAt(): int
+    {
+        $wrapped = $this->readWrapped();
+        return (int) ($wrapped['refreshed_at'] ?? 0);
+    }
+
+    private function stampRefreshedAt(int $at): void
+    {
+        if ($this->cacheFile === null) {
+            return;
+        }
+        $wrapped = $this->readWrapped() ?? [];
+        $wrapped['refreshed_at'] = $at;
+        @file_put_contents($this->cacheFile, json_encode($wrapped), LOCK_EX);
+    }
+
+    /**
+     * The cache file's whole wrapper, expired or not, or null.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function readWrapped(): ?array
+    {
+        if ($this->cacheFile === null || !is_file($this->cacheFile)) {
+            return null;
+        }
+        $raw = @file_get_contents($this->cacheFile);
+        $wrapped = $raw === false ? null : json_decode($raw, true);
+        return is_array($wrapped) ? $wrapped : null;
     }
 
     /**
@@ -122,15 +193,8 @@ final class Jwks
      */
     private function readCache(): ?array
     {
-        if ($this->cacheFile === null || !is_file($this->cacheFile)) {
-            return null;
-        }
-        $raw = @file_get_contents($this->cacheFile);
-        if ($raw === false) {
-            return null;
-        }
-        $wrapped = json_decode($raw, true);
-        if (!is_array($wrapped) || !isset($wrapped['fetched_at'], $wrapped['doc'])) {
+        $wrapped = $this->readWrapped();
+        if ($wrapped === null || !isset($wrapped['fetched_at'], $wrapped['doc'])) {
             return null;
         }
         if ((time() - (int) $wrapped['fetched_at']) > $this->ttl) {
@@ -147,7 +211,13 @@ final class Jwks
         if ($this->cacheFile === null) {
             return;
         }
-        $payload = json_encode(['fetched_at' => time(), 'doc' => $doc]);
+        $wrapped = ['fetched_at' => time(), 'doc' => $doc];
+        // Keep the forced-refresh stamp: it outlives any one cached document.
+        $stamp = (int) (($this->readWrapped() ?? [])['refreshed_at'] ?? 0);
+        if ($stamp > 0) {
+            $wrapped['refreshed_at'] = $stamp;
+        }
+        $payload = json_encode($wrapped);
         @file_put_contents($this->cacheFile, $payload, LOCK_EX);
     }
 

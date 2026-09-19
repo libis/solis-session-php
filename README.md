@@ -291,7 +291,11 @@ page trees. Page-tree ACLs then use the mapped Grav groups.
 - Audience: with `service_name` set, `aud` must contain it (array or string form);
   otherwise the request is treated as having no session. Without `service_name`,
   `aud` is not checked — set it in every service
-- Key rotation: an unknown `kid` triggers one forced JWKS refresh before failing
+- Key rotation: an unknown `kid` triggers one forced JWKS refresh before failing — at most once
+  per 60 seconds, failed attempts included, so tokens with made-up kids cannot turn every request
+  into a JWKS request to solis-identity (the same rule as the Ruby solis-session). The stamp is
+  kept in the JWKS cache file, so **set `cache_dir`**: under PHP-FPM each request builds a new
+  `Session`, and without a cache file the limit only holds within one request
 
 ## Testing
 
