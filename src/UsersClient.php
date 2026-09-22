@@ -29,6 +29,7 @@ namespace Solis\Session;
  *   $users->disable('jane@example.com');
  *   $users->enable('jane@example.com');
  *   $users->invite('jane@example.com');               // re-send set-password mail
+ *   $users->renew('jane@example.com');                // re-date from its account profile
  *   $users->changeEmail('jane@example.com', 'jane.doe@example.com');
  *   $users->delete('jane@example.com');               // to trash, restorable
  *
@@ -98,7 +99,14 @@ final class UsersClient
      * The name doubles as a login handle for applications configured that way,
      * so it must be unique platform-wide; a clash throws with code 409.
      *
-     * @param array{password?:string, roles?:array<int,string>, app_roles?:array<string,array<int,string>>, tenant?:string, api_keys_enabled?:bool} $fields
+     * $fields may carry 'account_profile' to put the account on a named
+     * lifecycle policy from the start. Without one, identity applies the
+     * application's or the workspace's default, which is usually what you
+     * want — pass it only to override that.
+     *
+     *   $users->create('jane@example.com', 'Jane Doe', ['account_profile' => 'guest']);
+     *
+     * @param array{password?:string, roles?:array<int,string>, app_roles?:array<string,array<int,string>>, tenant?:string, api_keys_enabled?:bool, account_profile?:?string, expires_at?:?string} $fields
      * @return array<string,mixed>
      */
     public function create(string $email, string $name, array $fields = []): array
@@ -114,10 +122,21 @@ final class UsersClient
     /**
      * Partial update — a $fields naming only 'name' changes only the name.
      *
-     * Accepts name, roles, app_roles, api_keys_enabled and password. Roles and
-     * app_roles apply to one membership: the key's own tenant for a
-     * tenant_admin, or 'tenant' (defaulting to the user's primary) for a
-     * super_admin; other memberships are left alone.
+     * Accepts name, roles, app_roles, api_keys_enabled, password,
+     * account_profile and expires_at. Roles and app_roles apply to one
+     * membership: the key's own tenant for a tenant_admin, or 'tenant'
+     * (defaulting to the user's primary) for a super_admin; other memberships
+     * are left alone.
+     *
+     * The two lifecycle fields follow the same rule as the admin form: the
+     * profile decides the policy and materialises a date, while an explicit
+     * expires_at overrides it for this account only. A body naming both takes
+     * the date. Either set to null clears the expiry. An unknown profile slug
+     * throws with code 422 rather than silently clearing it.
+     *
+     *   $users->update('jane@example.com', ['account_profile' => 'guest']);
+     *   $users->update('jane@example.com', ['expires_at' => '2030-06-15']);
+     *   $users->update('jane@example.com', ['account_profile' => null]);
      *
      * The address and the status are not updatable here — changeEmail() also
      * notifies the old address, and enable()/disable() guard against locking
@@ -170,6 +189,31 @@ final class UsersClient
     public function invite(string $email): array
     {
         return $this->request('POST', $this->pathFor($email) . '/invite', null);
+    }
+
+    /**
+     * Re-date an account from its own account profile, counting from now
+     * rather than from a creation date already in the past, and clear an
+     * 'expired' status.
+     *
+     * This is the counterpart to an account that has lapsed rather than been
+     * suspended — the two are separate facts, and enable() deliberately does
+     * NOT extend an expiry, so lifting a suspension cannot silently undo a
+     * lapse. Check 'expired' on the record to tell which applies:
+     *
+     *   $user = $users->find('jane@example.com');
+     *   if ($user['expired']) { $users->renew('jane@example.com'); }
+     *
+     * Throws with code 422 ('no_account_profile') when the account carries no
+     * profile to renew from. An account given an explicit expiry date is
+     * extended with update() instead, which is also how you move one onto a
+     * different profile.
+     *
+     * @return array<string,mixed>
+     */
+    public function renew(string $email): array
+    {
+        return $this->request('POST', $this->pathFor($email) . '/renew', null);
     }
 
     /**

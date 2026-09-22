@@ -214,6 +214,60 @@ final class UsersClientTest extends TestCase
         $this->assertStringEndsWith('/jane%40example.com/invite', $this->calls[0]['url']);
     }
 
+    // ── Account lifecycle ────────────────────────────────────────────────────
+
+    public function testRenewPostsToTheRenewEndpoint(): void
+    {
+        $this->client($this->transport())->renew('jane@example.com');
+
+        $this->assertSame('POST', $this->calls[0]['method']);
+        $this->assertStringEndsWith('/jane%40example.com/renew', $this->calls[0]['url']);
+        $this->assertNull($this->calls[0]['reqBody']);
+    }
+
+    // An account with no profile has nothing to renew from. The typed code is
+    // what callers branch on, rather than parsing the message.
+    public function testRenewWithoutAProfileThrows422(): void
+    {
+        $client = $this->client($this->transport(422, json_encode(['error' => 'no_account_profile'])));
+
+        try {
+            $client->renew('jane@example.com');
+            $this->fail('expected an exception');
+        } catch (Exception $e) {
+            $this->assertSame(422, $e->getCode());
+        }
+    }
+
+    public function testUpdateSendsLifecycleFields(): void
+    {
+        $this->client($this->transport())
+             ->update('jane@example.com', ['account_profile' => 'guest']);
+
+        $this->assertSame('PATCH', $this->calls[0]['method']);
+        $this->assertSame('guest', $this->sentBody()['account_profile']);
+    }
+
+    // null must survive json_encode as a real null, not be dropped — it is how
+    // a caller clears the expiry.
+    public function testUpdateCanClearTheProfileWithNull(): void
+    {
+        $this->client($this->transport())
+             ->update('jane@example.com', ['account_profile' => null]);
+
+        $body = $this->sentBody();
+        $this->assertArrayHasKey('account_profile', $body);
+        $this->assertNull($body['account_profile']);
+    }
+
+    public function testCreateCarriesAnAccountProfile(): void
+    {
+        $this->client($this->transport(201))
+             ->create('jane@example.com', 'Jane Doe', ['account_profile' => 'guest']);
+
+        $this->assertSame('guest', $this->sentBody()['account_profile']);
+    }
+
     public function testDeleteReportsWhetherItHappened(): void
     {
         $client = $this->client($this->transport(200, json_encode(['deleted' => true])));
