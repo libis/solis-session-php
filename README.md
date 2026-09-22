@@ -229,6 +229,7 @@ $users->update('jane@example.com', ['name' => 'Jane R. Doe']);
 $users->disable('jane@example.com');              // keeps everything; enable is a flip
 $users->enable('jane@example.com');
 $users->invite('jane@example.com');               // re-send the set-password mail
+$users->renew('jane@example.com');                // re-date from its account profile
 $users->changeEmail('jane@example.com', 'jane.doe@example.com');
 $users->delete('jane@example.com');               // true (to trash, restorable)
 ```
@@ -239,12 +240,49 @@ one creates an already-active account. The name doubles as a login handle for
 applications configured that way, so it must be unique platform-wide.
 
 `update()` is a **partial** update: a call naming only `name` changes only the
-name. It takes `name`, `roles`, `app_roles`, `api_keys_enabled` and `password`;
-roles and app_roles apply to one membership (the key's own tenant, or `tenant`
-for a super_admin), leaving other memberships alone. The address and the status
-are not updatable there — `changeEmail()` also notifies the old address, and
-`enable()`/`disable()` guard against locking yourself out, so sending those
-fields throws rather than being silently ignored.
+name. It takes `name`, `roles`, `app_roles`, `api_keys_enabled`, `password`,
+`account_profile` and `expires_at`; roles and app_roles apply to one membership
+(the key's own tenant, or `tenant` for a super_admin), leaving other memberships
+alone. The address and the status are not updatable there — `changeEmail()` also
+notifies the old address, and `enable()`/`disable()` guard against locking
+yourself out, so sending those fields throws rather than being silently ignored.
+
+#### Account expiry
+
+An account can carry a named **account profile** — a lifecycle policy defined on
+the identity server (`guest`, `staff`, …) that decides when the account stops
+working. Identity applies the application's or the workspace's default on
+create, so most callers never mention it; pass one to override that.
+
+```php
+$users->create('jane@example.com', 'Jane Doe', ['account_profile' => 'guest']);
+
+$users->update('jane@example.com', ['account_profile' => 'guest']);  // re-derive the date
+$users->update('jane@example.com', ['expires_at' => '2030-06-15']);  // one-off extension
+$users->update('jane@example.com', ['account_profile' => null]);     // never expires
+```
+
+The profile decides the policy and materialises a date; an explicit
+`expires_at` overrides it for that account only, and wins when a call names
+both. Either set to `null` clears the expiry. An unknown profile slug throws
+with code 422 rather than silently clearing it.
+
+**Expiry and suspension are separate facts, and `enable()` does not clear an
+expiry.** Lifting a suspension must not silently undo a lapse, so an account
+that has passed its date stays refused after `enable()` — the record reports
+`expired`, and `renew()` is what re-dates it:
+
+```php
+$user = $users->find('jane@example.com');
+if ($user['expired']) {
+    $users->renew('jane@example.com');
+}
+```
+
+`renew()` counts from now rather than from a creation date already in the past,
+and clears an `expired` status. It throws with code 422 (`no_account_profile`)
+when the account has no profile to renew *from* — an account given an explicit
+`expires_at` is extended with `update()` instead.
 
 #### Password recovery
 
