@@ -207,14 +207,26 @@ final class AttributesClientTest extends TestCase
 
     // ── Session convenience ──────────────────────────────────────────────────
 
-    public function testForClaimsUsesTheValidatedUsersEmail(): void
+    public function testForClaimsUsesTheValidatedUsersAccountId(): void
     {
-        $claims = new Claims(['sub' => 'jane@example.com', 'email' => 'jane@example.com']);
+        $sub    = '01929f3e-7c1a-7b52-9f0e-3c2d9a4b1e77';
+        $claims = new Claims(['sub' => $sub, 'email' => 'jane@example.com']);
         $res = $this->client($this->transport(200, json_encode(['attributes' => ['theme' => 'dark']])))
                     ->forClaims($claims);
 
-        $this->assertStringContainsString('jane%40example.com', $this->calls[0]['url']);
+        $this->assertStringContainsString("/api/users/{$sub}/attributes", $this->calls[0]['url']);
+        $this->assertStringNotContainsString('jane', $this->calls[0]['url']);
         $this->assertSame(['theme' => 'dark'], $res);
+    }
+
+    // An account need not have an address (an ORCID-only login); its
+    // attributes are still reachable through its id.
+    public function testForClaimsWorksForAnAccountWithoutAnAddress(): void
+    {
+        $sub = '01929f3e-7c1a-7b52-9f0e-3c2d9a4b1e77';
+        $this->client($this->transport(200, json_encode(['attributes' => []])))
+             ->forClaims(new Claims(['sub' => $sub]));
+        $this->assertStringContainsString($sub, $this->calls[0]['url']);
     }
 
     // Guest mode: no session means no request at all, not an exception.
