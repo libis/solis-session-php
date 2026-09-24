@@ -6,7 +6,11 @@ namespace Solis\Session;
 
 /**
  * Reads and writes user attributes on solis-identity
- * (/api/users/:email/attributes).
+ * (/api/users/:ref/attributes).
+ *
+ * Every method takes a `ref`: the account id (the JWT `sub`) or an address.
+ * Prefer the id — it survives an address change, and an account need not have
+ * an address at all.
  *
  * Attributes are the counterpart to the KV claim store, and the difference is
  * what reaches a token. A KV value is projected into the JWT at issuance and is
@@ -37,8 +41,8 @@ namespace Solis\Session;
  *   $attrs->replace('jane@example.com', ['only' => 'this']);
  *   $attrs->delete('jane@example.com', 'seats');
  *
- * In a request the email comes off the validated session, so the common call is
- * $attrs->forClaims($claims).
+ * In a request the account id comes off the validated session, so the common
+ * call is $attrs->forClaims($claims).
  */
 final class AttributesClient
 {
@@ -73,9 +77,9 @@ final class AttributesClient
      *
      * @return array<string,mixed>
      */
-    public function all(string $email): array
+    public function all(string $ref): array
     {
-        $res = $this->request('GET', $this->pathFor($email), null);
+        $res = $this->request('GET', $this->pathFor($ref), null);
         return is_array($res['attributes'] ?? null) ? $res['attributes'] : [];
     }
 
@@ -87,10 +91,10 @@ final class AttributesClient
      * null because that is what a caller reaching for one value wants. Use
      * all() and array_key_exists() when the difference matters.
      */
-    public function get(string $email, string $key): mixed
+    public function get(string $ref, string $key): mixed
     {
         try {
-            $res = $this->request('GET', $this->pathFor($email) . '/' . rawurlencode($key), null);
+            $res = $this->request('GET', $this->pathFor($ref) . '/' . rawurlencode($key), null);
         } catch (Exception $e) {
             if ($e->getCode() === 404) {
                 return null;
@@ -101,11 +105,11 @@ final class AttributesClient
     }
 
     /** Set one attribute. Returns the stored value. */
-    public function set(string $email, string $key, mixed $value): mixed
+    public function set(string $ref, string $key, mixed $value): mixed
     {
         $res = $this->request(
             'PUT',
-            $this->pathFor($email) . '/' . rawurlencode($key),
+            $this->pathFor($ref) . '/' . rawurlencode($key),
             json_encode(['value' => $value])
         );
         return $res['value'] ?? null;
@@ -118,9 +122,9 @@ final class AttributesClient
      * @param array<string,mixed> $attributes
      * @return array<string,mixed>
      */
-    public function merge(string $email, array $attributes): array
+    public function merge(string $ref, array $attributes): array
     {
-        $res = $this->request('PATCH', $this->pathFor($email), json_encode(['attributes' => $attributes]));
+        $res = $this->request('PATCH', $this->pathFor($ref), json_encode(['attributes' => $attributes]));
         return is_array($res['attributes'] ?? null) ? $res['attributes'] : [];
     }
 
@@ -130,16 +134,16 @@ final class AttributesClient
      * @param array<string,mixed> $attributes
      * @return array<string,mixed>
      */
-    public function replace(string $email, array $attributes): array
+    public function replace(string $ref, array $attributes): array
     {
-        $res = $this->request('PUT', $this->pathFor($email), json_encode(['attributes' => $attributes]));
+        $res = $this->request('PUT', $this->pathFor($ref), json_encode(['attributes' => $attributes]));
         return is_array($res['attributes'] ?? null) ? $res['attributes'] : [];
     }
 
     /** Remove one attribute. Returns true when it was there to remove. */
-    public function delete(string $email, string $key): bool
+    public function delete(string $ref, string $key): bool
     {
-        $res = $this->request('DELETE', $this->pathFor($email) . '/' . rawurlencode($key), null);
+        $res = $this->request('DELETE', $this->pathFor($ref) . '/' . rawurlencode($key), null);
         return ($res['deleted'] ?? false) === true;
     }
 
@@ -148,9 +152,9 @@ final class AttributesClient
      *
      * @return array<string,mixed>
      */
-    public function clear(string $email): array
+    public function clear(string $ref): array
     {
-        $res = $this->request('DELETE', $this->pathFor($email), null);
+        $res = $this->request('DELETE', $this->pathFor($ref), null);
         return is_array($res['attributes'] ?? null) ? $res['attributes'] : [];
     }
 
@@ -159,20 +163,24 @@ final class AttributesClient
      * session belongs to. Returns [] when there is no session, so a guest-mode
      * service can call it unconditionally.
      *
+     * Keyed on `sub`, the account id, never on the `email` claim: an account
+     * need not have an address, and one that changed its address mid-session
+     * carries the old one until it signs in again.
+     *
      * @return array<string,mixed>
      */
     public function forClaims(?Claims $claims): array
     {
-        $email = $claims?->email();
-        if ($email === null || trim($email) === '') {
+        $sub = $claims?->subject();
+        if ($sub === null || trim($sub) === '') {
             return [];
         }
-        return $this->all($email);
+        return $this->all($sub);
     }
 
-    private function pathFor(string $email): string
+    private function pathFor(string $ref): string
     {
-        return $this->baseUrl . '/api/users/' . rawurlencode($email) . '/attributes';
+        return $this->baseUrl . '/api/users/' . rawurlencode($ref) . '/attributes';
     }
 
     /**
